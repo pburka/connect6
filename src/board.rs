@@ -53,19 +53,11 @@ impl Board {
 	}
 	
 	fn get_row(&self, row:usize) -> Line {
-		Line { 
-			size: BOARD_SIZE, 
-			cells : self.rows[row].cells, 
-		}
+		Line::on(self, row, 0, 0, 1, BOARD_SIZE)
 	}
 	
 	fn get_col(&self, col:usize) -> Line {
-		let mut line = Line::empty(BOARD_SIZE);
-		for row in 0..BOARD_SIZE {
-			let val = self.get(row, col);
-			line.set(row, val);
-		}
-		return line
+		Line::on(self, 0, col, 1, 0, BOARD_SIZE)
 	}
 
 	/**
@@ -78,13 +70,9 @@ impl Board {
 		assert!(row == 0 || col == 0);
 		assert!(row < BOARD_SIZE);
 		assert!(col < BOARD_SIZE);
+
 		let len = BOARD_SIZE - row - col;
-		let mut line = Line::empty(len);
-		for i in 0..len {
-			let val = self.get(row + i, col + i);
-			line.set(i, val);
-		}
-		return line
+		Line::on(self, row, col, 1, 1, len)
 	}
 	
 	/**
@@ -98,13 +86,9 @@ impl Board {
 		assert!(row == BOARD_SIZE-1 || col == 0);
 		assert!(row < BOARD_SIZE);
 		assert!(col < BOARD_SIZE);
+
 		let len = row - col + 1;
-		let mut line = Line::empty(len);
-		for i in 0..len {
-			let val = self.get(row - i, col + i);
-			line.set(i, val);
-		}
-		return line
+		Line::on(self, row, col, -1, 1, len)
 	}
 
 	pub fn empty() -> Board {
@@ -117,6 +101,18 @@ impl Line {
 		Line { size: size, cells: [Piece::Empty; BOARD_SIZE] }
 	}
 	
+	fn on(board:&Board, row:usize, col:usize, rstride:i32, cstride:i32, size:usize) -> Line {
+		let mut line = Line::empty(size);
+		for i in 0..size {
+			let val = board.get(
+				(row as i32 + (i as i32 * rstride)) as usize, 
+				(col as i32 + (i as i32 * cstride)) as usize
+			);
+			line.set(i, val);
+		}
+		line
+	} 
+	
 	fn set(&mut self, index:usize, val:Piece) {
 		assert!(index < self.size);
 		self.cells[index] = val
@@ -127,10 +123,79 @@ impl Line {
 	}
 }
 
+#[derive(Debug)]
+enum State {
+	Row(usize),
+	Col(usize),
+	DownDiag(usize, usize), 
+	UpDiag(usize, usize),
+	Finished,
+}
+
+struct LineIterator<'a> {
+	board:&'a Board,
+	state:State,
+}
+
+impl<'a> LineIterator<'a> {
+	fn on(board:&Board) -> LineIterator {
+		LineIterator { board: board, state: State::Row(0) }
+	}
+}
+
+impl<'a> Iterator for LineIterator<'a> {
+	type Item = Line;
+	
+	fn next(&mut self) -> Option<Line> {
+		let result = match self.state {
+			State::Row(r) => Some(self.board.get_row(r)),
+			State::Col(c) => Some(self.board.get_col(c)),
+			State::UpDiag(r, c) => Some(self.board.get_up_diagonal(r, c)),
+			State::DownDiag(r, c) => Some(self.board.get_down_diagonal(r, c)),
+			State::Finished => None
+		};
+		self.state = self.state.next();
+		return result
+	}
+}
+
+impl State {
+	fn next(&self) -> State {
+		const MAX:usize = BOARD_SIZE - 1;
+		match self {
+			// 0->MAX
+			&State::Row(MAX) => State::Col(0), 
+			&State::Row(i)   => State::Row(i+1),
+
+			// 0->MAX
+			&State::Col(MAX) => State::UpDiag(0, 0),
+			&State::Col(i)   => State::Col(i+1),
+
+			// (0,0)->(MAX,0)->(MAX,MAX)
+			&State::UpDiag(MAX, 0)   => State::UpDiag(MAX, 1),
+			&State::UpDiag(MAX, MAX) => State::DownDiag(0, MAX),
+			&State::UpDiag(r, 0)     => State::UpDiag(r+1, 0),
+			&State::UpDiag(MAX, c)   => State::UpDiag(MAX, c+1),
+
+			// (0,MAX)->(0,0)->(MAX,0)
+			&State::DownDiag(0, 0)   => State::DownDiag(1, 0),
+			&State::DownDiag(MAX, 0) => State::Finished,
+			&State::DownDiag(0, c)   => State::DownDiag(0, c-1),
+			&State::DownDiag(r, 0)   => State::DownDiag(r+1, 0),
+
+			// terminal
+			&State::Finished => State::Finished,
+			
+			_ => panic!("Illegal state {:?}", self)
+		}
+	}
+}
+
 #[cfg(test)]
 mod test {
 	use super::Board;
 	use super::Piece;
+	use super::State;
 	use board::CENTER;
 	use board::BOARD_SIZE;
 
@@ -194,5 +259,30 @@ mod test {
 		assert_eq!(b.get_up_diagonal(1, 0).size(), 2);
 		assert_eq!(b.get_up_diagonal(BOARD_SIZE-1, 0).size(), BOARD_SIZE);
 		assert_eq!(b.get_up_diagonal(BOARD_SIZE-1, BOARD_SIZE-1).size(), 1);
+	}
+	
+	#[test]
+	fn test_state_transition() {
+		let mut s = State::Row(0);
+		let mut rows = 0;
+		let mut cols = 0;
+		let mut d1 = 0;
+		let mut d2 = 0;
+		
+		loop {
+			match s {
+				State::Row(_) => rows += 1,
+				State::Col(_) => cols += 1,
+				State::UpDiag(_, _) => d1 += 1,
+				State::DownDiag(_, _) => d2 += 1,
+				State::Finished => break,
+			}
+			s = s.next();
+		}
+		
+		assert_eq!(rows, BOARD_SIZE);
+		assert_eq!(cols, BOARD_SIZE);
+		assert_eq!(d1, BOARD_SIZE * 2 - 1);
+		assert_eq!(d2, BOARD_SIZE * 2 - 1);		
 	}
 }
